@@ -152,6 +152,16 @@
     border-radius: 14px; padding: 14px 16px; margin-top: 4px;
   }
   .howto b{ color: var(--ink); }
+
+  .save-status{
+    display:flex; justify-content: space-between; align-items:center;
+    font-size: 11px; color: var(--ink-faint); margin-top: 12px; padding: 0 2px;
+  }
+  .save-status .reset-btn{
+    background:none; border:none; color: var(--ink-faint); font-size: 11px;
+    text-decoration: underline; cursor:pointer; padding:0;
+  }
+  .save-status .reset-btn:hover{ color: var(--satellite); }
 </style>
 </head>
 <body>
@@ -164,7 +174,7 @@
     <div class="panel-title">งบที่จะลงทุนเดือนนี้</div>
     <div class="budget-row">
       <label>บาท</label>
-      <input type="number" id="totalBudget" value="200000" min="0" step="100">
+      <input type="text" inputmode="decimal" id="totalBudget" value="200000">
     </div>
     <div class="split-bar" id="splitBar"></div>
     <div class="split-legend" id="splitLegend"></div>
@@ -175,7 +185,13 @@
 
   <div class="howto">
     <b>วิธีทำงาน</b> — งบรวมถูกแบ่งตามสัดส่วน Core/Ballast/Satellite ก่อน จากนั้นในแต่ละกลุ่ม ระบบจะเติมเงินให้สินทรัพย์ที่ "ตามหลัง" สัดส่วนเป้าหมายมากที่สุดก่อน ถ้าตัวไหนมูลค่าเกินเป้าหมายอยู่แล้วจะไม่เติมเดือนนี้ (ค่า = 0) แล้วนำงบไปให้ตัวที่ตามหลังแทน — ไม่มีการขายสินทรัพย์ใดๆ ทั้งสิ้น<br><br>
-    <b>ใช้ทุกเดือนยังไง</b> — ก่อนซื้อแต่ละเดือน อัปเดต "มูลค่าปัจจุบัน" ของทุกตัวตามราคาจริง แล้วดูผลลัพธ์ใหม่
+    <b>ใช้ทุกเดือนยังไง</b> — ก่อนซื้อแต่ละเดือน อัปเดต "มูลค่าปัจจุบัน" ของทุกตัวตามราคาจริง แล้วดูผลลัพธ์ใหม่<br><br>
+    <b>เคล็ดลับ</b> — ในช่อง "มูลค่าปัจจุบัน" หรืองบรวม พิมพ์ <code>+10000</code> หรือ <code>-5000</code> แล้วกด Enter/คลิกออกนอกช่อง เพื่อบวก/ลบจากค่าเดิมโดยไม่ต้องคำนวณเอง
+  </div>
+
+  <div class="save-status">
+    <span id="saveStatus">&nbsp;</span>
+    <button class="reset-btn" id="resetBtn">ล้างข้อมูลที่บันทึกไว้</button>
   </div>
 
 <script>
@@ -214,8 +230,120 @@ const totalBudgetEl = document.getElementById('totalBudget');
 const splitBarEl = document.getElementById('splitBar');
 const splitLegendEl = document.getElementById('splitLegend');
 const splitWarnEl = document.getElementById('splitWarn');
+const saveStatusEl = document.getElementById('saveStatus');
+const resetBtn = document.getElementById('resetBtn');
 
 function fmt(n){ return Math.round(n).toLocaleString('en-US'); }
+
+// --- Quick math entry (+10000 / -5000 adds/subtracts from the field's current value) ---
+const inputBaseValues = new WeakMap();
+
+function isDeltaExpr(raw){
+  return /^\s*[+-]/.test(String(raw || ''));
+}
+
+// Resolves what a user typed into a numeric text field: a leading +/- is treated
+// as a delta against `base` (e.g. "+10000" => base + 10000); anything else is a
+// plain absolute number. Commas are tolerated so pasted "10,000" style text works.
+function resolveNumericInput(raw, base){
+  if(raw == null) return 0;
+  const trimmed = String(raw).trim().replace(/,/g, '');
+  if(trimmed === '') return 0;
+  const m = trimmed.match(/^([+-])\s*(\d*\.?\d*)$/);
+  if(m){
+    const sign = m[1] === '-' ? -1 : 1;
+    const num = m[2] === '' ? 0 : parseFloat(m[2]);
+    return (base || 0) + sign * (isNaN(num) ? 0 : num);
+  }
+  const n = parseFloat(trimmed);
+  return isNaN(n) ? 0 : n;
+}
+
+function fmtPlain(n){
+  // Plain numeric string for writing back into an input (no thousands separators).
+  return String(Math.round(n * 100) / 100);
+}
+
+// Wires "type +N / -N to add/subtract from the current value" onto a text input.
+// getBase() supplies the value to add/subtract from (snapshotted on focus, so a
+// mid-typing string like "+1" doesn't recompute against its own live preview).
+// onChange(newValue) fires live while typing, and once more on blur/Enter once
+// the field is normalized back to a plain absolute number.
+function enableDeltaInput(inputEl, getBase, onChange){
+  inputEl.addEventListener('focus', () => {
+    inputBaseValues.set(inputEl, getBase());
+    inputEl.select();
+  });
+  inputEl.addEventListener('input', () => {
+    const raw = inputEl.value;
+    const base = isDeltaExpr(raw)
+      ? (inputBaseValues.has(inputEl) ? inputBaseValues.get(inputEl) : getBase())
+      : 0;
+    onChange(resolveNumericInput(raw, base));
+  });
+  function finalize(){
+    const raw = inputEl.value;
+    if(isDeltaExpr(raw)){
+      const base = inputBaseValues.has(inputEl) ? inputBaseValues.get(inputEl) : getBase();
+      const result = resolveNumericInput(raw, base);
+      inputEl.value = fmtPlain(result);
+      inputBaseValues.set(inputEl, result);
+      onChange(result);
+    } else if(raw.trim() !== ''){
+      inputBaseValues.set(inputEl, resolveNumericInput(raw, 0));
+    }
+  }
+  inputEl.addEventListener('blur', finalize);
+  inputEl.addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ finalize(); inputEl.blur(); }
+  });
+}
+
+// --- Autosave (localStorage) ---
+const STORAGE_KEY = 'rebalanceCalculator.state.v1';
+
+function saveState(){
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      totalBudget: state.totalBudget,
+      buckets: state.buckets,
+    }));
+    if(saveStatusEl){
+      const t = new Date();
+      const hh = String(t.getHours()).padStart(2,'0');
+      const mm = String(t.getMinutes()).padStart(2,'0');
+      saveStatusEl.textContent = `บันทึกล่าสุด ${hh}:${mm}`;
+    }
+  } catch(e){ /* localStorage unavailable (private mode, etc.) — silently skip */ }
+}
+
+function loadState(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw) return null;
+    const saved = JSON.parse(raw);
+    if(saved && typeof saved.totalBudget === 'number' && Array.isArray(saved.buckets)){
+      return saved;
+    }
+  } catch(e){ /* corrupted or unavailable — ignore, fall back to defaults */ }
+  return null;
+}
+
+const savedState = loadState();
+if(savedState){
+  state.totalBudget = savedState.totalBudget;
+  state.buckets = savedState.buckets;
+  totalBudgetEl.value = state.totalBudget;
+}
+
+if(resetBtn){
+  resetBtn.addEventListener('click', () => {
+    if(confirm('ล้างข้อมูลที่บันทึกไว้ในเบราว์เซอร์นี้ และกลับไปใช้ค่าตั้งต้น?')){
+      try{ localStorage.removeItem(STORAGE_KEY); } catch(e){}
+      location.reload();
+    }
+  });
+}
 
 // Water-filling allocation: buy-only rebalance toward target weights
 function allocate(assets, budget){
@@ -327,7 +455,7 @@ function renderAssetRows(bucket){
       <div class="field-grid">
         <div class="field">
           <label>มูลค่าปัจจุบัน (บาท)</label>
-          <input type="number" data-bucket="${bucket.id}" data-idx="${i}" data-field="value" value="${a.value}" min="0" step="100">
+          <input type="text" inputmode="decimal" data-bucket="${bucket.id}" data-idx="${i}" data-field="value" value="${a.value}">
         </div>
         <div class="field">
           <label>สัดส่วนเป้าหมาย (%)</label>
@@ -338,7 +466,7 @@ function renderAssetRows(bucket){
     rowsEl.appendChild(row);
   });
 
-  rowsEl.querySelectorAll('input').forEach(inp => {
+  rowsEl.querySelectorAll('input[data-field="name"], input[data-field="weight"]').forEach(inp => {
     inp.addEventListener('input', e => {
       const b = state.buckets.find(bk => bk.id === e.target.dataset.bucket);
       const idx = parseInt(e.target.dataset.idx);
@@ -347,6 +475,22 @@ function renderAssetRows(bucket){
       else{ b.assets[idx][field] = parseFloat(e.target.value) || 0; }
       compute();
     });
+  });
+  rowsEl.querySelectorAll('input[data-field="value"]').forEach(inp => {
+    const bucketId = inp.dataset.bucket;
+    const idx = parseInt(inp.dataset.idx);
+    enableDeltaInput(
+      inp,
+      () => {
+        const b = state.buckets.find(bk => bk.id === bucketId);
+        return b && b.assets[idx] ? b.assets[idx].value : 0;
+      },
+      (val) => {
+        const b = state.buckets.find(bk => bk.id === bucketId);
+        if(b && b.assets[idx]) b.assets[idx].value = val;
+        compute();
+      }
+    );
   });
   rowsEl.querySelectorAll('.remove-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -360,8 +504,7 @@ function renderAssetRows(bucket){
 }
 
 function compute(){
-  const totalBudget = parseFloat(totalBudgetEl.value) || 0;
-  state.totalBudget = totalBudget;
+  const totalBudget = state.totalBudget || 0;
   renderSplit();
 
   const totalBucketW = state.buckets.reduce((s,b) => s + b.weight, 0) || 1;
@@ -420,9 +563,14 @@ function compute(){
       cappedEl.style.display = 'none';
     }
   });
+
+  saveState();
 }
 
-totalBudgetEl.addEventListener('input', compute);
+enableDeltaInput(totalBudgetEl, () => state.totalBudget, (val) => {
+  state.totalBudget = val;
+  compute();
+});
 
 renderSplit();
 renderBuckets();
